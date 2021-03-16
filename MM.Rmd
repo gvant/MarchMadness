@@ -1,0 +1,251 @@
+---
+title: "March Madness"
+author: "gvant"
+date: "3/16/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r libraries}
+library(dplyr)
+library(foreign)
+library(nnet)
+library(ggplot2)
+library(reshape2)
+```
+
+# Open up the College Basketball file. Organize by year and make a dataframe. 
+```{r Organize}
+college.basketball <- read.csv("~/Desktop/Programming/Datasets/College Basketball/cbb.csv")
+college.basketball <- data.frame(college.basketball)
+march.madness <- college.basketball[is.na(college.basketball$POSTSEASON) == FALSE,]
+```
+
+# This may come in handy later. Also adding a variable called "WR" which is the winrate for the teams in their respective seasons.
+```{r WinRate}
+team.names <- as.character(unique(college.basketball$TEAM))
+march.madness <- mutate(march.madness, WR = W/G)
+```
+
+# Given that the placement of teams is provided, I would like to run an analysis which uses stats like Two-Point Shooting Percentage to predict the placement of that team in a given year. First I'll start by splitting the data into training and testing, with a 15/85 split.
+```{r Splitting}
+sample.size <- floor(.85  * nrow(march.madness))
+set.seed(222)
+train.sel <- sample(seq_len(nrow(march.madness)), size = sample.size)
+
+cbb.train <- march.madness[train.sel,]
+cbb.test <- march.madness[-train.sel,]
+
+colnames(cbb.train)
+```
+
+# Our outcome variable is "POSTSEASON". Our predictor variables are those listed from EFG_O to 3P_D, along with WR. Creating new variable called "PS2," or "POST SEASON 2." Also testing for p-values.
+```{r P-Values}
+cbb.train$PS2 <- relevel(cbb.train$POSTSEASON, ref = "S16")
+test <- multinom(PS2 ~ EFG_O + EFG_D + TOR + TORD + ORB + DRB + FTR + FTRD + X2P_O + X2P_D + X3P_O + X3P_D + WR, data = cbb.train)
+summary(test)
+
+z <- summary(test)$coefficients/summary(test)$standard.errors
+p <- (1 - pnorm(abs(z), 0, 1)) * 2
+p
+```
+
+# With further investigation using a 2-tailed hypothesis test, it seems as though we should only focus on ORB, 2P_D, and WR. A few alternative models are constructed.
+```{r Alternative Models}
+test2 <- multinom(PS2 ~ ORB + X2P_D + WR, data = cbb.train)
+summary(test2)
+
+test3 <- multinom(PS2 ~ ORB + WR, data = cbb.train)
+summary(test3)
+
+test4 <- multinom(PS2 ~ ADJOE + ADJDE + BARTHAG + EFG_O + EFG_D + TOR + TORD + ORB + DRB + FTR + FTRD + X2P_O + X2P_D + X3P_O + X3P_D + WR + ADJ_T, data = cbb.train)
+summary(test4)
+```
+
+# Listing out predictive values for each team, then creating some columns so that we can test the accuracy of the models so far.
+```{r Accuracy Test, echo=FALSE}
+predictions <- round(fitted(test), digits = 4)*100
+pred2 <- round(fitted(test2), digits = 4)*100
+pred3 <- round(fitted(test3), digits = 4)*100
+pred4 <- round(fitted(test4), digits = 4)*100
+
+cbb.train$PC <- colnames(predictions)[max.col(predictions, ties.method="first")]
+cbb.train$PC2 <- colnames(pred2)[max.col(pred2, ties.method="first")]
+cbb.train$PC3 <- colnames(pred3)[max.col(pred3, ties.method="first")]
+cbb.train$PC4 <- colnames(pred4)[max.col(pred4, ties.method="first")]
+
+cbb.train$PP <- NA
+cbb.train$PP2 <- NA
+cbb.train$PP3 <- NA
+cbb.train$PP4 <- NA
+
+for (i in 1:nrow(cbb.train)){
+  cbb.train$PP[i] <- max(predictions[i,])
+  cbb.train$PP2[i] <- max(pred2[i,])
+  cbb.train$PP3[i] <- max(pred3[i,])
+  cbb.train$PP4[i] <- max(pred4[i,])
+} 
+```
+
+# Let's look at the accuracy of the models so far. It seems as though model 4 is 'best fit' to this data, which is the model with the most variables. Though it is technically the most accurate model in the training data, it may be over-fit.
+```{r Best Fit}
+mean(cbb.train$PS2 == cbb.train$PC)
+mean(cbb.train$PS2 == cbb.train$PC2)
+mean(cbb.train$PS2 == cbb.train$PC3)
+mean(cbb.train$PS2 == cbb.train$PC4)
+```
+
+# Let's try some other models with the same variables, but this time let's normalize all of the stats according to the averages in their respective years. After all, teams can only compete within the same season, so this might give our models a bit of an edge.
+```{r More Models and Means, echo=FALSE}
+cbb.train.means <- cbb.train
+colselect <- c(5:21, 25)
+
+for (i in 2013:2019){
+  for (j in colselect){
+    year <- cbb.train.means[cbb.train.means$YEAR == i,]
+    mean <- mean(year[,j])
+    if (cbb.train.means$YEAR == i){
+      cbb.train.means[,j] <- (cbb.train.means[,j] - mean)
+    }
+  }
+}
+
+test5 <- multinom(PS2 ~ EFG_O + EFG_D + TOR + TORD + ORB + DRB + FTR + FTRD + X2P_O + X2P_D + X3P_O + X3P_D + WR, data = cbb.train.means)
+summary(test5)
+
+test6 <- multinom(PS2 ~ ORB + X2P_D + WR, data = cbb.train.means)
+summary(test6)
+
+test7 <- multinom(PS2 ~ ORB + WR, data = cbb.train.means)
+summary(test7)
+
+test8 <- multinom(PS2 ~ ADJOE + ADJDE + BARTHAG + EFG_O + EFG_D + TOR + TORD + ORB + DRB + FTR + FTRD + X2P_O + X2P_D + X3P_O + X3P_D + WR + ADJ_T, data = cbb.train.means)
+summary(test8)
+
+pred5 <- round(fitted(test5), digits = 4)*100
+pred6 <- round(fitted(test6), digits = 4)*100
+pred7 <- round(fitted(test7), digits = 4)*100
+pred8 <- round(fitted(test8), digits = 4)*100
+
+cbb.train$PC5 <- colnames(pred5)[max.col(pred5, ties.method="first")]
+cbb.train$PC6 <- colnames(pred6)[max.col(pred6, ties.method="first")]
+cbb.train$PC7 <- colnames(pred7)[max.col(pred7, ties.method="first")]
+cbb.train$PC8 <- colnames(pred8)[max.col(pred8, ties.method="first")]
+
+cbb.train$PP5 <- NA
+cbb.train$PP6 <- NA
+cbb.train$PP7 <- NA
+cbb.train$PP8 <- NA
+
+for (i in 1:nrow(cbb.train)){
+  cbb.train$PP5[i] <- max(pred5[i,])
+  cbb.train$PP6[i] <- max(pred6[i,])
+  cbb.train$PP7[i] <- max(pred7[i,])
+  cbb.train$PP8[i] <- max(pred8[i,])
+} 
+```
+
+# Now let's look at the results from these models. As predicted, the "normalized" version of the best-fit model in the first batch is even better-fit to the data. Again, this may change when tested.
+```{r Best-fit Means}
+mean(cbb.train$PS2 == cbb.train$PC5)
+mean(cbb.train$PS2 == cbb.train$PC6)
+mean(cbb.train$PS2 == cbb.train$PC7)
+mean(cbb.train$PS2 == cbb.train$PC8)
+```
+
+# Time to test the models on the training data!
+```{r Testing, echo=FALSE}
+cbb.test.means <- cbb.test
+colselect <- c(5:21, 25)
+for (i in 2013:2019){
+  for (j in colselect){
+    year <- cbb.test.means[cbb.test$YEAR == i,]
+    mean <- mean(year[,j])
+    if (cbb.test.means$YEAR == i){
+      cbb.test.means[,j] <- (cbb.test[,j] - mean)
+    }
+  }
+}
+
+cbb.test$UPC1 <- predict(test, newdata = cbb.test, "class")
+cbb.test$UPC2 <- predict(test2, newdata = cbb.test, "class")
+cbb.test$UPC3 <- predict(test3, newdata = cbb.test, "class")
+cbb.test$UPC4 <- predict(test4, newdata = cbb.test, "class")
+cbb.test$UPC5 <- predict(test5, newdata = cbb.test.means, "class")
+cbb.test$UPC6 <- predict(test6, newdata = cbb.test.means, "class")
+cbb.test$UPC7 <- predict(test7, newdata = cbb.test.means, "class")
+cbb.test$UPC8 <- predict(test8, newdata = cbb.test.means, "class")
+```
+
+# Results from the models. Looks like rather than model 4 and 8 which were 'best fit,' model 5 actually seems to be the better predictor. We'll use that one to predict the March Madness champions.
+```{r Results}
+mean(cbb.test$POSTSEASON == cbb.test$UPC1)*100
+mean(cbb.test$POSTSEASON == cbb.test$UPC2)*100
+mean(cbb.test$POSTSEASON == cbb.test$UPC3)*100
+mean(cbb.test$POSTSEASON == cbb.test$UPC4)*100
+mean(cbb.test$POSTSEASON == cbb.test$UPC5)*100
+mean(cbb.test$POSTSEASON == cbb.test$UPC6)*100
+mean(cbb.test$POSTSEASON == cbb.test$UPC7)*100
+mean(cbb.test$POSTSEASON == cbb.test$UPC8)*100
+```
+
+# Setting up all of the data using model 5.
+```{r Final Model, echo=FALSE}
+march.madness$PS2 <- relevel(march.madness$POSTSEASON, ref = "S16")
+mm.means <- march.madness
+colselect <- c(5:21, 25)
+for (i in 2013:2019){
+  for (j in colselect){
+    year <- march.madness[march.madness$YEAR == i,]
+    mean <- mean(year[,j])
+    if (mm.means$YEAR == i){
+      mm.means[,j] <- (march.madness[,j] - mean)
+    }
+  }
+}
+ttest5 <- multinom(PS2 ~ EFG_O + EFG_D + TOR + TORD + ORB + DRB + FTR + FTRD + X2P_O + X2P_D + X3P_O + X3P_D + WR, data = mm.means)
+summary(ttest5)
+
+ppred5 <- round(fitted(ttest5), digits = 4)*100
+mm.means$PRED <- colnames(ppred5)[max.col(ppred5, ties.method="first")]
+mm.means$PROB <- NA
+for (i in 1:nrow(mm.means)){
+  mm.means$PROB[i] <- max(ppred5[i,])
+} 
+mean(mm.means$PS2 == mm.means$PRED)
+```
+
+# We are now ready to predict the winners for 2021.
+```{r 2021 Predictions}
+cbb21 <- read.csv("~/Desktop/Programming/Datasets/College Basketball/cbb21.csv")
+mm21 <- cbb21[is.na(cbb21$SEED) == FALSE,]
+
+mm21 <- mutate(mm21, WR = W/G)
+
+colselect <- c(5:21, 23)
+mm21.means <- mm21
+  for (j in colselect){
+    mean <- mean(mm21[,j])
+    mm21.means[,j] <- (mm21[,j] - mean)
+}
+
+# Predicting!
+mm21$PRED <- predict(ttest5, newdata = mm21.means, "class")
+```
+
+# And it is...
+```{r 2021 Winner}
+winner <- mm21[mm21$PRED == "Champions",]
+as.character(winner$TEAM)
+```
+
+# Baylor! Though many have Gonzaga placed to win, can this team pull through? Our model says it can, so we can only hope. 
